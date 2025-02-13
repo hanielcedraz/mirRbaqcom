@@ -26,7 +26,7 @@ suppressPackageStartupMessages(
         mcprogress,
         progress,
         lubridate,
-        # rlist,
+        rlist,
         cli
     )
 )
@@ -137,6 +137,8 @@ createFastqQuery <- function(sampleFile = NULL, inputFolder, outputSufix) {
             as.data.frame()
     }
     
+    # sampleTable <- sampleTable %>% 
+    #     filter(!str_detect(basenameOutput, outputSufix))
     
     # i = 1
     for (i in 1:nrow(sampleTable)) {
@@ -149,7 +151,7 @@ createFastqQuery <- function(sampleFile = NULL, inputFolder, outputSufix) {
     }
     
     
-    cat("\n\n");cli_h1("Preparing sample query");cli_alert_info(" Setting up {length(fastqList)} jobs");cat("\n\n")
+    # cat("\n\n");cli_h1("Preparing sample query");cli_alert_info(" Setting up {length(fastqList)} jobs");cat("\n\n")
     return(fastqList)
 }
 
@@ -177,6 +179,52 @@ checkFastqFolder <- function(folder) {
     
 }
 
+checkJobDone <- function(query, folder, pattern = "cleaned_cutadapt.fastq$", runJob) {
+    cli_h1("Preparing sample query for {runJob}")
+    
+    filesDoneTbl <- file.info(list.files(folder, full.names = TRUE, pattern = pattern)) %>%
+        rownames_to_column(var = "FileName") %>%
+        mutate(FileName = str_remove_all(basename(FileName), ".fastq|.gz")) %>%
+        select(FileName, size) %>%
+        filter(size != 0)
+    
+    # nextFiles <- str_remove_all(nextFilesTbl$FileName, pattern = "_classified_kraken_report.tsv") %>% 
+    #     unique()
+    filesDone <- unique(filesDoneTbl$FileName)
+    
+    
+    #nextFiles <- filterOutputFiles(output = maskedFiles, listPattern = )
+    
+    if (length(filesDone) > 0) {
+        
+        
+        
+        lengthSamples <- length(list.filter(query, !output %in% filesDone))
+        
+        
+        remainingSamples <- ifelse(lengthSamples > 0, glue(" Cleaning up {lengthSamples} samples"), ' None files to be cleaned')
+        
+        
+        # cli_h1("Preparing sample query")
+        cli_alert_success(" Detected {length(filesDoneTbl$FileName)} fastq files in {basename(folder)}")
+        cli_alert_success(remainingSamples)
+       
+        # write(glue::glue("\n\n{str_dup('-', 100)} \n\n ----- Detecting {length(filesDoneTbl$FileName)} unsorted bam files in {basename(folder)} folder \n\n ----- {remainingSamples} \n\n {str_dup('-', 100)}\n\n"), stdout())
+        
+        
+        
+        
+        query <- list.filter(query, !output %in% filesDone)
+        
+    } else {
+        cli_alert_info(" Setting up {length(query)} jobs");cat("\n\n")
+        
+    }
+    
+    # cli_h1("")
+    
+    return(query)
+}
 
 ########################################
 ### SETING PARAMETERS
@@ -339,60 +387,141 @@ if (!dir.exists(opt$cleanedReads)) {
     cli_alert_success(" Directory {opt$cleanedReads} is ready");cat("\n\n")
 }
 
-# opt$samplesFile <- "samples.txt"
-cutadaptQuery <- createFastqQuery(sampleFile = opt$samplesFile, inputFolder = opt$rawFastq, outputSufix = "cleaned_cutadapt")
+
+
 
 procs <- prepareCore(opt$procs);cat("\n\n")
 
 
-runCutAdapter <- mcprogress::pmclapply(cutadaptQuery, function(index) {
-    try({
-        system(
-            glue(
-                "cutadapt  --quiet -m {opt$minimumLength} -u {opt$cut}",
-                " -a {opt$adapter} -j {procs}",
-                "--minimum-length {opt$minimumLength}",
-                ifelse(!is.null(opt$maximumLength), "--maximum-length {opt$maximumLength}", ""),
-                "--max-n {opt$maxN}",
-                "{opt$rawFastq}/{index$R1} -o {opt$cleanedReads}/{index$output}.fastq",
-                "> reports/{index$sampleName}_cutadapt_reports.log",
-                "2> reports/{index$sampleName}_cutadapt_reports.err",
-                .sep = " "
+# opt$samplesFile <- "samples.txt"
+cutadaptQuery <- createFastqQuery(sampleFile = opt$samplesFile, inputFolder = opt$rawFastq, outputSufix = "cleaned_cutadapt")
+
+cutadaptQuery <- checkJobDone(cutadaptQuery, opt$cleanedReads, pattern = "cleaned_cutadapt.fastq$", runJob = "Cutadapt")
+
+
+if (length(cutadaptQuery) > 0) {
+    
+    runCutAdapter <- mcprogress::pmclapply(cutadaptQuery, function(index, USE.NAMES = TRUE) {
+        
+        try({
+            system(
+                glue(
+                    "cutadapt  --quiet -m {opt$minimumLength} -u {opt$cut}",
+                    " -a {opt$adapter} -j {procs}",
+                    "--minimum-length {opt$minimumLength}",
+                    ifelse(!is.null(opt$maximumLength), "--maximum-length {opt$maximumLength}", ""),
+                    "--max-n {opt$maxN}",
+                    "{opt$rawFastq}/{index$R1} -o {opt$cleanedReads}/{index$output}.fastq",
+                    "> reports/{index$sampleName}_cutadapt_reports.log",
+                    "2> reports/{index$sampleName}_cutadapt_reports.err",
+                    .sep = " "
+                )
             )
-        )
-    })
-}, spinner = TRUE, eta = TRUE, title = "Running cutadapt, please wait...", mc.cores = opt$sampleToprocs)
+        })
+        
+    }, spinner = TRUE, eta = TRUE, title = "Running cutadapt, please wait...", mc.cores = opt$sampleToprocs)
+    
+    
+    if (!all(sapply(runCutAdapter, "==", 0L))) {
+        
+        
+        names(runCutAdapter) <- sapply(cutadaptQuery, function(index) index$sampleName)
+        
+        failedJobs <- names(which(sapply(runCutAdapter, "==", 0L) == FALSE))
+        
+        
+        logFailedSamples <- lapply(failedJobs, function(x) {
+            readr::read_file(glue("reports/{x}_cutadapt_reports.err"))
+        }) %>% 
+            unlist() %>% unique()
+        
+        cli_abort(c("x" = logFailedSamples))
+        
+        
+        
+        
+        # sendingEmail(body = glue::glue("Something went wrong with picard sorting bam. The following jobs failed:  \n   - {glue::glue_collapse(failedJobs, sep = '\n   - ')}"), emailTo = emailError, subject = "step picard sorting bam ERROR", credsFile = creds, UserName = "Haniel Cedraz")
+        # stop(glue::glue("Something went wrong with picard sorting bam. The following jobs failed:  \n   - {glue::glue_collapse(failedJobs, sep = '\n   - ')}"))
+        
+    }
+    
+    cat("\n\n\n")
+    
+} else {
+    cat("\n\n");cli_h1("");cli_alert_success(" All cutadapt cleaned fastq are ready");cat("\n\n")
+}
+
+
+
+
+
+
+
 
 #
 
 if (opt$runTrimmomatic) {
     trimmomaticQuery <- createFastqQuery(sampleFile = NULL, inputFolder = opt$cleanedReads, outputSufix = "trimmomatic")
     
-    runTrimmomatic <- mcprogress::pmclapply(trimmomaticQuery, function(index){
-        #         write(glue("trimmomatic SE -threads {procs} ",
-        #                    "{opt$cleanedReads}/{index$R1}",
-        #                    "{opt$cleanedReads}/{index$output}.fastq.gz",
-        #                    "SLIDINGWINDOW:5:20 LEADING:3 TRAILING:3
-        # MINLEN:18",
-        #                    "> reports/{index$sampleName}_trimmomatic_reports.log",
-        #                    "2> reports/{index$sampleName}_trimmomatic_reports.err",
-        #                    .sep = " "
-        #         ), stdout())
-        try({
-            system(
-                glue(
-                    "trimmomatic SE -quiet -threads {procs} ",
-                    "{opt$cleanedReads}/{index$R1}",
-                    "{opt$cleanedReads}/{index$output}.fastq.gz",
-                    "SLIDINGWINDOW:5:20 LEADING:3 TRAILING:3 MINLEN:18",
-                    "-summary reports/{index$sampleName}_trimmomatic_reports.log",
-                    .sep = " "
-                )
-            )
-        })
-    }, spinner = TRUE, eta = TRUE, title = "Running trimmomatic, please wait...", mc.cores = opt$sampleToprocs)
+    trimometicDir <- glue("{opt$cleanedReads}Trimomatic")
+    if(!dir.exists(trimometicDir)) {
+        dir.create(trimometicDir, recursive = TRUE)
+        cli_alert_success(" {trimometicDir} created to store fastq files from trimmomatic")
+    }
     
-}
+    trimmomaticQuery <- checkJobDone(query = trimmomaticQuery, folder = trimometicDir, pattern = "cleaned_cutadapt_trimmomatic.fastq.gz$", runJob = "Trimmomatic")
+    
+    
+    
+    if (length(trimmomaticQuery) > 0) {
+        
+        runTrimmomatic <- mcprogress::pmclapply(trimmomaticQuery, function(index){
+            try({
+                system(
+                    glue(
+                        "trimmomatic SE -quiet -threads {procs} ",
+                        "{opt$cleanedReads}/{index$R1}",
+                        "{trimometicDir}/{index$output}.fastq.gz",
+                        "SLIDINGWINDOW:5:20 LEADING:3 TRAILING:3 MINLEN:18",
+                        "-summary reports/{index$sampleName}_trimmomatic_reports.log",
+                        .sep = " "
+                    )
+                )
+            })
+        }, spinner = TRUE, eta = TRUE, title = "Running trimmomatic, please wait...", mc.cores = opt$sampleToprocs)
+        
+        
+        if (!all(sapply(runTrimmomatic, "==", 0L))) {
+            
+            
+            names(runTrimmomatic) <- sapply(trimmomaticQuery, function(index) index$sampleName)
+            
+            failedJobs <- names(which(sapply(runTrimmomatic, "==", 0L) == FALSE))
+            
+            
+            logFailedSamples <- lapply(failedJobs, function(x) {
+                readr::read_file(glue("reports/{x}_cutadapt_reports.err"))
+            }) %>% 
+                unlist() %>% unique()
+            
+            cli_abort(c("x" = logFailedSamples))
+            
+            
+            
+            
+            # sendingEmail(body = glue::glue("Something went wrong with picard sorting bam. The following jobs failed:  \n   - {glue::glue_collapse(failedJobs, sep = '\n   - ')}"), emailTo = emailError, subject = "step picard sorting bam ERROR", credsFile = creds, UserName = "Haniel Cedraz")
+            # stop(glue::glue("Something went wrong with picard sorting bam. The following jobs failed:  \n   - {glue::glue_collapse(failedJobs, sep = '\n   - ')}"))
+            
+        } 
+        
+        cat("\n\n\n")
+        
+    } else {
+        cat("\n\n");cli_h1("");cli_alert_success(" All trimmomatic cleaned fastq are ready");cat("\n\n")
+    }
+    
+    
+} 
 
 
 
