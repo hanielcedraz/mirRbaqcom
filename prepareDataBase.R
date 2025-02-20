@@ -26,7 +26,10 @@ suppressPackageStartupMessages(
         progress,
         lubridate,
         rlist,
-        cli
+        cli,
+        httr,
+        progress,
+        processx
     )
 )
 
@@ -122,24 +125,8 @@ userInput <- function(question) {
 # help="Show this help message and exit")
 
 option_list <- list(
-    # make_option(
-    #     opt_str = c("-f", "--file"), 
-    #     type = "character", 
-    #     default = "S1_data/gvi_skimseq_RunDate.txt",
-    #     help = "The filename of the sample file. The sample file should be stored at S1_data/ as a base name gvi_skimseq_ followed by the run date(e.g. gvi_skimseq_220909) [default %default]",
-    #     dest = "samplesFile"
-    # ),
-    # make_option(
-    #     opt_str = c("-m", "--multiqc"), 
-    #     action = 'store_true', 
-    #     type = "logical",
-    #     default = FALSE,
-    #     help = "Use this option if you want to run multiqc software  [default %default]",
-    #     dest = "multiqc"
-    # ),
     make_option(
         opt_str = c("-d", "--database"),
-        #action = 'store_true',
         type = "character",
         default = glue("database"),
         help = "The directory to store all reference files  [default %default]",
@@ -147,7 +134,6 @@ option_list <- list(
     ),
     make_option(
         opt_str = c("-s", "--specie"),
-        #action = 'store_true',
         type = "character",
         default = "Cow",
         help = "Specie name - Common name (Cow) or Scientific name (Bos_taurus) [default %default]",
@@ -160,13 +146,6 @@ option_list <- list(
         help = "Number of processors to use [default %default]",
         dest = "procs"
     ),
-    # make_option(
-    #     opt_str = c("-q", "--sampleprocs"), 
-    #     type = "integer", 
-    #     default = 2,
-    #     help = "Number of samples to process at each time [default %default]",
-    #     dest = "sampleToprocs"
-    # ),
     make_option(
         opt_str = c("-t", "--referenceGenome"), 
         type = "character", 
@@ -177,63 +156,18 @@ option_list <- list(
     make_option(
         opt_str = c("-M", "--useMirgeneDB"), 
         action = "store_true", 
-        #type = "character", 
         default = FALSE,
         help = "Use this option for merging mature file from mirGeneDB and miRBase [%default]",
         dest = "useMirgeneDB"
+    ),
+    make_option(
+        opt_str = c("-q", "--quiet"),
+        action  =  'store_true',
+        #type  =  "logic",
+        default = FALSE,
+        help = "Do not show bowtie-build progress [default %default]",
+        dest = "quiet"
     )
-    # make_option(
-    #     opt_str = c("-z", "--libraryType"),
-    #     type  = 'character', 
-    #     default = "singleEnd",
-    #     help = "The library type to use. Available: 'pairEnd' or 'singleEnd'. [ default %default]",
-    #     dest = "libraryType"
-    # ),
-    # make_option(
-    #     opt_str = c("-M", "--program"),
-    #     type  = 'character', 
-    #     default = "bowtie",
-    #     help = "Which mapping program to use. Options: 'bowtie', 'bwa'. [ default %default]",
-    #     dest = "mappingProgram"
-    # ),
-    # make_option(
-    #     opt_str = c("-x", "--useConda"),
-    #     action  =  'store_true',
-    #     #type  =  "logic",
-    #     default = FALSE,
-    #     help = "Run the pipeline inside a conda environment [default %default]",
-    #     dest = "useConda"
-    # ),
-    # make_option(
-    #     opt_str = c("-e", "--condaEnv"),
-    #     type = "character",
-    #     default = "genderPurity",
-    #     help = "Name of the conda env [default %default]. If new env, please provide the file containing the conda env to be created",
-    #     dest = "condaEnv"
-    # )
-    # make_option(
-    #     opt_str = c("-w", "--pmode"), 
-    #     action = "store_true", 
-    #     default = FALSE,
-    #     help  =  "Use this option if you want to run two pass mode mapping. --mappingProgram must be hisat2 [default %default].",
-    #     dest  =  "PassMode"
-    # ),
-    # make_option(
-    #     opt_str = c("-o", "--indexFiles"), 
-    #     type  = 'character', 
-    #     default = 'ht2_base',
-    #     help = "The basename of the index files to write. --mappingProgram must be hisat2 [%default].",
-    #     dest = "indexFiles"
-    #     ),
-    # make_option(
-    #     opt_str = c("-n", "--notification"),
-    #     type = "logical",
-    #     action = "store_false",
-    #     default = TRUE,
-    #     help = "Wheter to get notification from email. [default %default]",
-    #     dest = "notification"
-    # ),
-    
 )
 
 # get command line options, if help option encountered print help and exit,
@@ -299,6 +233,9 @@ if (!file.exists(matureFile)) {
     } else {
         cli_process_done()
     }
+    
+} else {
+    cli_alert_success("{opt$database}/mature.fa exists")
 }
 
 ## Filtering specie sequences from mature.fa
@@ -363,7 +300,7 @@ if (opt$useMirgeneDB) {
     finalMergedFile <- glue("{opt$database}/{spcCode}_mature_mirbase_mirgeneDB_dna.fa")
     command <- glue("cat {mirGeneFileDNA} {finalMatureFile} > {finalMergedFile}")
     system(command)
-
+    
 }
 
 
@@ -383,16 +320,20 @@ if (!dir.exists(indexFolder)) {
     dir.create(indexFolder, recursive = TRUE)
 }
 
-cli_process_start(" Indexing mature files using bowtie")
-command <- glue("bowtie-build -q {refMatureFile} {indexFolder}/{indexMatureFiles}")
+# cli_process_start(" Indexing mature files using bowtie")
+cli_alert_info(" Preparing mature file ... ")
+
+command <- glue("bowtie-build {ifelse(opt$quiet, '--quiet', '')} {refMatureFile} {indexFolder}/{indexMatureFiles}")
 system(command)
 
 bowtieFiles <- list.files(indexFolder, pattern = indexMatureFiles)
 
 if (length(bowtieFiles) > 1){
-    cli_process_done()
+    # cli_process_done()
+    cli_alert_success(" Preparing mature file ... done")
 } else {
-    cli_process_failed()
+    # cli_process_failed()
+    cli_alert_danger(" Preparing mature file... failed")
 }
 
 
@@ -401,7 +342,7 @@ if (length(bowtieFiles) > 1){
 
 
 
-cli_alert_success(" Preparing mature file... done")
+
 
 
 #################################################################################
@@ -419,6 +360,8 @@ if (!file.exists(hairpinFile)) {
     } else {
         cli_process_done()
     }
+} else {
+    cli_alert_success("{opt$database}/hairpin.fa exists")
 }
 
 ## Filtering specie sequences from hairpin.fa
@@ -465,19 +408,22 @@ if(!dir.exists(indexFolder)) {
 
 indexHairpinFiles <- glue("{spcCode}_hairpin_dna_final")
 
-cli_process_start(" Indexing hairpin files using bowtie")
-command <- glue("bowtie-build -q {finalhairpinFile} {indexFolder}/{indexHairpinFiles}")
+# cli_process_start(" Indexing hairpin files using bowtie")
+cli_alert_info(" Preparing hairpin file ...")
+command <- glue("bowtie-build {ifelse(opt$quiet, '--quiet', '')} {finalhairpinFile} {indexFolder}/{indexHairpinFiles}")
 system(command)
 
 bowtieFiles <- list.files(indexFolder, pattern = indexHairpinFiles)
 
 if (length(bowtieFiles) > 1){
-    cli_process_done()
+    # cli_process_done()
+    cli_alert_success(" Preparing hairpin file ... done")
 } else {
-    cli_process_failed()
+    # cli_process_failed()
+    cli_alert_danger(" Preparing hairpin file ... failed")
 }
 
-cli_alert_success(" Preparing hairpin file... done")
+
 
 #################################################################################
 
@@ -485,8 +431,9 @@ cli_alert_success(" Preparing hairpin file... done")
 ## Download the bovine reference genome from ensembl: https://ftp.ensembl.org/pub/release-113/fasta/bos_taurus/dna/Bos_taurus.ARS-UCD1.3.dna.toplevel.fa.gz
 
 ## Remove spaces from reads beginning. This will help to use genomes from other sources but UCSC
-cat("\n\n");cli_rule(center = "Preparing {opt$specie} reference genome");cat("\n\n")
+
 if (file.exists(opt$referenceGenome)) {
+    cat("\n\n");cli_rule(center = "Preparing {opt$specie} reference genome");cat("\n\n")
     # opt$referenceGenome <- "Bos_taurus.ARS-UCD1.3.dna.toplevel.fa.gz"
     # file_path_sans_ext(basename(opt$referenceGenome), compression = TRUE)
     cleanedRefGenome <- glue("{opt$database}/{file_path_sans_ext(basename(opt$referenceGenome), compression = TRUE)}_for_mirdeep.fa")
@@ -506,6 +453,8 @@ if (file.exists(opt$referenceGenome)) {
         } else {
             cli_process_failed()
         }
+    } else {
+        cli_alert_success(" {cleanedRefGenome} ready")
     }
     
     
@@ -513,7 +462,9 @@ if (file.exists(opt$referenceGenome)) {
     ## build index reference genome downloaded from ensembl using bowtie
     refIndexFolder <- glue("{opt$database}/{str_remove(basename(cleanedRefGenome), '_for_mirdeep.fa')}")
     
-    bowtieFiles <- list.files(refIndexFolder, pattern = "ebwt")
+    bowtieFiles <- list.files(refIndexFolder, pattern = "ebwt", full.names = TRUE)
+    
+    
     
     if(!any(file.exists(bowtieFiles))) {
         
@@ -526,10 +477,27 @@ if (file.exists(opt$referenceGenome)) {
         
         cat("\n\n");cli_h1("Running bowtie-build for {basename(cleanedRefGenome)}");cat("\n\n")
         
-        command <- glue("bowtie-build --threads {procs} {opt$database}/{file_path_sans_ext(basename(opt$referenceGenome), compression = TRUE)}_for_mirdeep.fa {refIndexFolder}/{file_path_sans_ext(basename(cleanedRefGenome), compression = TRUE)}")
-        # cli_progress_bar("Building index genome from {basename(cleanedRefGenome)}", total = 300)
-        system(command)
-        # cli_progress_update()
+        command <- glue("bowtie-build {ifelse(opt$quiet, '--quiet', '')} --threads {procs} {opt$database}/{file_path_sans_ext(basename(opt$referenceGenome), compression = TRUE)}_for_mirdeep.fa {refIndexFolder}/{file_path_sans_ext(basename(cleanedRefGenome), compression = TRUE)} ")
+        
+        ## Using mclapply here to get progress while running the command
+        if (opt$quiet) {
+            bowtieBuild <- mcprogress::pmclapply(command, function(index) {
+                try({system(index)})
+            }, spinner = TRUE, eta = TRUE, title = "Building index genome, please wait... It can take a while")
+            
+            
+            
+            if (!all(sapply(bowtieBuild, "==", 0L))) {
+                
+                cli_abort(c("x" = "Something went wrong with bowtie-build"))
+                
+            }
+            
+        } else {
+            system(command)
+        }
+        
+        
         
         bowtieFiles <- list.files(refIndexFolder, pattern = "ebwt")
         
@@ -539,12 +507,9 @@ if (file.exists(opt$referenceGenome)) {
             cli_abort(c(" x" = "Something went wrong with bowtie-build"))
         }
         
+    } else {
+        cli_alert_success(" All index file are ready")
     }
-    
-    
-    
-
-    
     
     
 } else {
@@ -552,7 +517,89 @@ if (file.exists(opt$referenceGenome)) {
 }
 
 
+cat("\n\n");cli_rule(center = "Preparing tRNA and rRNA files");cat("\n\n")
+if (!file.exists(glue("{opt$database}/rfam/Rfam_tRNA_rRNA.fa"))) {
+    
+    accessionNamesFile <- "Data/tRNA_rRNA_accession_name.txt"
+    if (file.exists(accessionNamesFile)) {
+        
+        rFamFolder <- glue("{opt$database}/rfam")
+        
+        if (!dir.exists(rFamFolder)) {
+            dir.create(rFamFolder, recursive = TRUE)
+        }
+        
+        list.files(rFamFolder)
+        
+        accessionNames <- fread(accessionNamesFile)
+        
+        
+        
+        
+        if (!file.exists(glue("{opt$database}/rfam/Rfam_tRNA_rRNA.fa"))) {
+            
+            
+            accessionFiles <- list.files(rFamFolder, full.names = TRUE)
+            
+            accessionNames <- accessionNames %>% 
+                mutate(FileName = glue("{rFamFolder}/{Accession}.fa.gz")) %>% 
+                filter(!FileName %in% accessionFiles)
+            
+            
+            
+            
+            if (nrow(accessionNames) > 1) {
+                
+                cli_alert_info(" Downloading the following tRNA and rRNA. 
+If you think the list is out of date, please download a new list from the rfam database.
+Go to https://rfam.org > Browse > entry type. 
+It will show up a tree with the options. 
+Select rRNA and RNA then click on submit. 
+Select the whole table (including the header) and save it in the file 'Data/tRNA_rRNA_accession_name.txt' as the example in the folder. \n\n")
+                accessionNames %>% 
+                    select(Accession, Type, Description) %>% 
+                    as_tibble() %>% 
+                    print()
+                cat("\n")
+                downloadRfam <- mcprogress::pmclapply(accessionNames$Accession, function(i) {
+                    url <- glue("https://ftp.ebi.ac.uk/pub/databases/Rfam/CURRENT/fasta_files/{i}.fa.gz")
+                    
+                    destfile <- glue("{rFamFolder}/{i}.fa.gz")
+                    GET(url, write_disk(destfile, overwrite = TRUE))
+                    
+                }, spinner = TRUE, eta = TRUE, title = glue("Downloading {nrow(accessionNames)} tRNA and rRNA files from Rfam ..."))
+                
+            }
+            
+            cat("\n\n")
+            
+            
+            concatFiles <- mcprogress::pmclapply(accessionFiles, function(i) {
+                
+                
+                system(glue("zcat {i} >> {opt$database}/rfam/Rfam_tRNA_rRNA.fa"))
+                
+                # unlink(destfile)
+                
+            }, spinner = TRUE, eta = TRUE, title = "concatenating accession files...")
+            
+            
+        }
+        
+        
+        
+    }
+    
+    
+} else {
+    cli_alert_success(" All tRNA and rRNA files are ready")
+}
+
+command <- "bowtie-build {ifelse(opt$quiet, '--quiet', '')} --threads 16 rfam/Rfam_tRNA_rRNA.fa rfam/Rfam_tRNA_rRNA"
+# system(command)
 
 
+
+cat("\n\n");cli_rule(center = "Preparing database finished successfully");cat("\n\n")
 
 
